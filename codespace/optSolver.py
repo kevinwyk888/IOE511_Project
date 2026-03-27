@@ -50,10 +50,13 @@ def Solver(problem, method, options):
     norm_g = np.linalg.norm(g, ord=np.inf)
     threshold = term_tol * max(norm_g, 1.0)
 
-    # BFGS/BFGSW keep an inverse-Hessian approximation; other methods ignore it.
+    # BFGS/BFGSW/DFP/DFPW keep an inverse-Hessian approximation; other methods ignore it.
     Hk = np.eye(x.shape[0])
 
-    # TRNewtonCG keeps its own trust-region radius from one iteration to the next.
+    # TRSR1CG keeps a Hessian approximation Bk updated via SR1; other methods ignore it.
+    Bk = np.eye(x.shape[0])
+
+    # TRNewtonCG/TRSR1CG keeps its own trust-region radius from one iteration to the next.
     trust_radius = _initial_trust_radius(method, options)
 
     f_hist = [float(f)]
@@ -94,7 +97,20 @@ def Solver(problem, method, options):
                     options,
                     trust_radius,
                 )
-
+                
+            # Algorithm 6: TRSR1CG, SR1 quasi-Newton with CG subproblem solver.
+            case "TRSR1CG":
+                x_new, f_new, g_new, _, alpha, trust_radius, Bk = algorithms.TRSR1CG(
+                    x,
+                    f,
+                    g,
+                    Bk,
+                    problem,
+                    method,
+                    options,
+                    trust_radius,
+                )
+                
             # Algorithm 7: BFGS, BFGS quasi-Newton with backtracking line search.
             case "BFGS" | "BFGS QN backtrack":
                 x_new, f_new, g_new, _, alpha, Hk = algorithms.BFGS(x, f, g, Hk, problem, method, options)
@@ -102,6 +118,14 @@ def Solver(problem, method, options):
             # Algorithm 8: BFGSW, BFGS quasi-Newton with Wolfe line search.
             case "BFGSW" | "BFGS QN wolfe":
                 x_new, f_new, g_new, _, alpha, Hk = algorithms.BFGSW(x, f, g, Hk, problem, method, options)
+
+            # Algorithm 9: DFP, DFP quasi-Newton with backtracking line search.
+            case "DFP":
+                x_new, f_new, g_new, _, alpha, Hk = algorithms.DFP(x, f, g, Hk, problem, method, options)
+
+            # Algorithm 10: DFPW, DFP quasi-Newton with Wolfe line search.
+            case "DFPW":
+                x_new, f_new, g_new, _, alpha, Hk = algorithms.DFPW(x, f, g, Hk, problem, method, options)
 
             case _:
                 raise ValueError(f"method '{method_name}' is not implemented yet")

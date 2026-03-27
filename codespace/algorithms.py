@@ -226,6 +226,34 @@ def _bfgs_update(Hk, s, y):
     return V @ Hk @ V.T + rho * np.outer(s, s)
 
 
+def _sr1_update(Bk, s, y):
+    """SR1 update for the Hessian approximation Bk.
+
+    B_{k+1} = B_k + (y - B_k s)(y - B_k s)^T / ((y - B_k s)^T s)
+    Skip update when denominator is too small (standard safeguard).
+    """
+    r = y - Bk @ s
+    denom = float(np.dot(r, s))
+    if abs(denom) < 1e-8 * np.linalg.norm(s) * np.linalg.norm(r):
+        return Bk.copy()
+    return Bk + np.outer(r, r) / denom
+
+
+def _dfp_update(Hk, s, y):
+    """DFP update for the inverse Hessian approximation Hk.
+
+    H_{k+1} = H_k - (H_k y y^T H_k) / (y^T H_k y) + (s s^T) / (y^T s)
+    """
+    ys = float(np.dot(y, s))
+    if ys <= 1e-12:
+        return Hk.copy()
+    Hy = Hk @ y
+    yHy = float(np.dot(y, Hy))
+    if abs(yHy) <= 1e-12:
+        return Hk.copy()
+    return Hk - np.outer(Hy, Hy) / yHy + np.outer(s, s) / ys
+
+
 # Algorithm 1: GradientDescent, with backtracking line search.
 def GradientDescent(x, f, g, problem, method, options):
     """Take one GradientDescent step using Armijo backtracking."""
@@ -295,6 +323,53 @@ def TRNewtonCG(x, f, g, problem, method, options, trust_radius):
     return x, f, g, np.zeros_like(g), np.nan, trust_radius_new
 
 
+# Algorithm 6: TRSR1CG, SR1 quasi-Newton with CG subproblem solver.
+def TRSR1CG(x, f, g, Bk, problem, method, options, trust_radius):
+    """Take one SR1 trust-region step using Steihaug CG.
+
+    Uses the SR1 Hessian approximation Bk in place of the true Hessian.
+    Returns updated Bk along with the usual outputs.
+    """
+    B = _symmetrize(Bk)
+    cg_tol_scale = float(_get_option(method, options, "term_tol_CG", 1e-6))
+    cg_tol = cg_tol_scale * max(1.0, np.linalg.norm(g))
+    max_cg_iters = int(_get_option(method, options, "max_iterations_CG", len(x)))
+    c1_tr = float(_get_option(method, options, "c1_tr", 0.25))
+    c2_tr = float(_get_option(method, options, "c2_tr", 0.75))
+    gamma_dec = float(_get_option(method, options, "gamma1_tr", 0.25))
+    gamma_inc = float(_get_option(method, options, "gamma2_tr", 2.0))
+    max_tr_radius = float(_get_option(method, options, "max_tr_radius", 1000.0))
+
+    # Solve the trust-region subproblem with truncated CG
+    d, boundary_hit = _truncated_cg(B, g, trust_radius, cg_tol, max_cg_iters)
+    predicted_reduction = -(float(np.dot(g, d)) + 0.5 * float(np.dot(d, B @ d)))
+
+    if predicted_reduction <= 0.0:
+        return x, f, g, np.zeros_like(g), np.nan, max(gamma_dec * trust_radius, 1e-12), Bk
+
+    x_trial = x + d
+    f_trial = problem.compute_f(x_trial)
+    actual_reduction = f - f_trial
+    rho = actual_reduction / predicted_reduction
+
+    # Update trust-region radius
+    trust_radius_new = trust_radius
+    if rho < c1_tr:
+        trust_radius_new = max(gamma_dec * trust_radius, 1e-12)
+    elif rho > c2_tr and boundary_hit:
+        trust_radius_new = min(gamma_inc * trust_radius, max_tr_radius)
+
+    # Accept or reject the step
+    if rho >= c1_tr:
+        g_trial = problem.compute_g(x_trial)
+        s = x_trial - x
+        y = g_trial - g
+        Bk_new = _sr1_update(Bk, s, y)
+        return x_trial, f_trial, g_trial, d, np.nan, trust_radius_new, Bk_new
+
+    return x, f, g, np.zeros_like(g), np.nan, trust_radius_new, Bk
+
+
 # Algorithm 7: BFGS, BFGS quasi-Newton with backtracking line search.
 def BFGS(x, f, g, Hk, problem, method, options):
     """Take one BFGS step using Armijo backtracking."""
@@ -314,6 +389,28 @@ def BFGSW(x, f, g, Hk, problem, method, options):
     s = x_new - x
     y = g_new - g
     Hk_new = _bfgs_update(Hk, s, y)
+    return x_new, f_new, g_new, d, alpha, Hk_new
+
+
+# Algorithm 9: DFP, DFP quasi-Newton with backtracking line search.
+def DFP(x, f, g, Hk, problem, method, options):
+    """Take one DFP step using Armijo backtracking."""
+    d = _ensure_descent_direction(g, -Hk @ g)
+    alpha, x_new, f_new, g_new = _backtracking_line_search(problem, x, f, g, d, method, options)
+    s = x_new - x
+    y = g_new - g
+    Hk_new = _dfp_update(Hk, s, y)
+    return x_new, f_new, g_new, d, alpha, Hk_new
+
+
+# Algorithm 10: DFPW, DFP quasi-Newton with Wolfe line search.
+def DFPW(x, f, g, Hk, problem, method, options):
+    """Take one DFPW step using a Wolfe line search."""
+    d = _ensure_descent_direction(g, -Hk @ g)
+    alpha, x_new, f_new, g_new = _wolfe_line_search(problem, x, f, g, d, method, options)
+    s = x_new - x
+    y = g_new - g
+    Hk_new = _dfp_update(Hk, s, y)
     return x_new, f_new, g_new, d, alpha, Hk_new
 
 
