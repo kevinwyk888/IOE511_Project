@@ -140,3 +140,8 @@ def Solver(problem, method, options):
         k += 1
 
     return x, f, f_hist, alpha_hist
+
+
+def optSolver(problem, method, options):
+    """Template-compatible entrypoint that forwards to Solver."""
+    return Solver(problem, method, options)
