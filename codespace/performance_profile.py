@@ -118,7 +118,7 @@ def select_top_configs(summary: pd.DataFrame, top_k: int) -> pd.DataFrame:
 
 
 def config_label(row: pd.Series) -> str:
-    c1 = f"{row['c1_ls']:.0e}"
+    c1 = f"{row['c1_ls']:g}"
     c2 = f"{row['c2_ls']:g}"
     return f"#{int(row['rank_within_method'])}  c1={c1}, c2={c2}"
 
@@ -222,12 +222,26 @@ def plot_performance_profile(
     total_problems = len(ratio_table.index)
 
     fig, ax = plt.subplots(figsize=(9.5, 6.0))
+    columns_in_rank_order = list(ratio_table.columns)
     colors = plt.cm.tab10(np.linspace(0.0, 1.0, ratio_table.shape[1]))
+    color_by_column = dict(zip(columns_in_rank_order, colors))
+    handle_by_column = {}
 
-    for color, column in zip(colors, ratio_table.columns):
+    # Plot from worst rank to best rank so lower-numbered labels stay visible
+    # when curves overlap. Also give smaller ranks higher zorder explicitly.
+    for reverse_idx, column in enumerate(reversed(columns_in_rank_order), start=1):
         ratios = ratio_table[column].to_numpy(dtype=float)
         profile = np.array([(ratios <= tau).sum() / total_problems for tau in tau_grid], dtype=float)
-        ax.plot(tau_grid, profile, lw=2.0, color=color, label=column)
+        rank_idx = columns_in_rank_order.index(column) + 1
+        line, = ax.plot(
+            tau_grid,
+            profile,
+            lw=2.0,
+            color=color_by_column[column],
+            label=column,
+            zorder=100 - rank_idx,
+        )
+        handle_by_column[column] = line
 
     ax.set_ylim(0.0, 1.05)
     ax.set_xlim(float(tau_grid[0]), float(tau_grid[-1]))
@@ -247,7 +261,8 @@ def plot_performance_profile(
         ax.xaxis.set_minor_locator(mticker.NullLocator())
         ax.xaxis.set_minor_formatter(mticker.NullFormatter())
         ax.xaxis.offsetText.set_visible(False)
-    ax.legend(loc="lower right", fontsize=8, frameon=True)
+    legend_handles = [handle_by_column[column] for column in columns_in_rank_order]
+    ax.legend(legend_handles, columns_in_rank_order, loc="lower right", fontsize=8, frameon=True)
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight")
