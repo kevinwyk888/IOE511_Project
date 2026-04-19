@@ -42,6 +42,7 @@ import functions
 import optSolver as _optSolver_module
 
 
+# Thin adapter: the shared solver module exposes either `optSolver` or `Solver`.
 def optSolver(problem, method, options):
     if hasattr(_optSolver_module, "optSolver"):
         return _optSolver_module.optSolver(problem, method, options)
@@ -49,6 +50,8 @@ def optSolver(problem, method, options):
 
 
 class Problem:
+    """Wraps one test problem and counts f/g/H evaluations."""
+
     def __init__(self, name, x0, func, grad, hess):
         self.name = name
         self.x0 = np.asarray(x0, dtype=float)
@@ -73,12 +76,16 @@ class Problem:
 
 
 class Method:
+    """Lightweight container for algorithm name and its option overrides."""
+
     def __init__(self, name, **options):
         self.name = name
         self.options = options
 
 
 class Options:
+    """Solver options bag; accepts arbitrary keyword overrides."""
+
     def __init__(self, term_tol=1e-6, max_iterations=1000, **kwargs):
         self.term_tol = term_tol
         self.max_iterations = max_iterations
@@ -87,6 +94,8 @@ class Options:
 
 
 def make_spd(n, kappa, rng):
+    # Build a random SPD matrix with condition number `kappa` via
+    # Q diag(geom(1, kappa)) Q^T, where Q is a random orthogonal matrix.
     A = rng.standard_normal((n, n))
     Q_orth, _ = np.linalg.qr(A)
     eigvals = np.geomspace(1.0, float(kappa), num=n)
@@ -94,6 +103,7 @@ def make_spd(n, kappa, rng):
 
 
 def build_problem_specs(seed=0):
+    """Construct the 12-problem benchmark used across the project."""
     rng = np.random.default_rng(seed)
     specs = []
 
@@ -225,13 +235,16 @@ GLOBAL_OPTIONS = {
 METHOD_DEFAULTS = {"alpha0": 1.0, "c1_ls": C1_STAR, "c2_ls": C2_STAR}
 
 
+# Method-1 normalization: log-scale c1, linear c2, both mapped to [0, 1].
 def to_z(c1, c2):
+    """Map (c1, c2) from physical space into normalized [0,1]^2 coordinates."""
     z1 = (math.log10(c1) - LOG_C1_MIN) / (LOG_C1_MAX - LOG_C1_MIN)
     z2 = (c2 - C2_MIN) / (C2_MAX - C2_MIN)
     return z1, z2
 
 
 def from_z(z1, z2):
+    """Inverse of ``to_z``; clamps back to the box before inverting the scales."""
     z1 = min(max(z1, 0.0), 1.0)
     z2 = min(max(z2, 0.0), 1.0)
     c1 = 10 ** (LOG_C1_MIN + z1 * (LOG_C1_MAX - LOG_C1_MIN))
@@ -240,11 +253,15 @@ def from_z(z1, z2):
 
 
 def sample_disk(z1_star, z2_star, radius, n_samples, rng):
+    """Uniformly sample ``n_samples`` points inside the disk of radius ``radius``
+    centered at (z1_star, z2_star) in [0,1]^2, rejecting points that fall
+    outside the box or that violate the Wolfe constraint c1 < c2."""
     pts = []
-    max_tries = n_samples * 30
+    max_tries = n_samples * 30  # cap to avoid infinite loops when the disk clips
     tries = 0
     while len(pts) < n_samples and tries < max_tries:
         tries += 1
+        # Uniform sampling inside a disk via (rho, theta) with rho = r * sqrt(U).
         u1, u2 = rng.random(), rng.random()
         rho = radius * math.sqrt(u1)
         theta = 2.0 * math.pi * u2
@@ -253,13 +270,15 @@ def sample_disk(z1_star, z2_star, radius, n_samples, rng):
         if not (0.0 <= z1 <= 1.0 and 0.0 <= z2 <= 1.0):
             continue
         c1, c2 = from_z(z1, z2)
-        if not (c1 < c2):
+        if not (c1 < c2):  # Wolfe requires c1 < c2
             continue
         pts.append((c1, c2, z1, z2))
     return pts
 
 
 def run_one(problem_spec, c1_ls, c2_ls):
+    """Run GradientDescentW once on ``problem_spec`` with the given Wolfe
+    parameters and return iteration counts, work, and a convergence flag."""
     method_options = dict(METHOD_DEFAULTS)
     method_options["c1_ls"] = c1_ls
     method_options["c2_ls"] = c2_ls
@@ -319,6 +338,7 @@ def run_one(problem_spec, c1_ls, c2_ls):
 
 
 def main():
+    # Stage 1: set up problem set and Monte Carlo samples in normalized space.
     specs = build_problem_specs(seed=0)
 
     z1_star, z2_star = to_z(C1_STAR, C2_STAR)
@@ -332,7 +352,9 @@ def main():
     print(f"Obtained {len(samples)} valid samples inside the disk "
           f"(Wolfe constraint c1 < c2 enforced).\n")
 
-    # One J* per problem: f_eval at the fixed center
+    # Stage 2: baseline pass. Run the fixed center (c1*, c2*) on every
+    # problem; J*_p = f_eval at the center is used as the per-problem
+    # reference for the sensitivity score below.
     print("Running center (c1*, c2*) on every problem to get J*_p ...")
     center_info = {}
     for spec in specs:
@@ -343,6 +365,8 @@ def main():
               f"iter={res['iterations']:<5}  "
               f"|g|_inf={res['grad_inf']:.2e}  [{flag}]")
 
+    # Only problems where the center itself converges are used: otherwise
+    # J*_p is meaningless and the relative deviation blows up.
     converged_problems = [p for p in specs if center_info[p['name']]['converged']]
     dropped = [p['name'] for p in specs if not center_info[p['name']]['converged']]
     print(f"\nProblems kept (center converged): {len(converged_problems)} / {len(specs)}")
@@ -352,6 +376,8 @@ def main():
     detailed_rows = []
     summary_rows = []
 
+    # Stage 3: evaluate every Monte Carlo sample on every kept problem and
+    # record its relative deviation from the center, J*_p.
     print("\nRunning Monte Carlo samples on converged problems only ...")
     for spec in converged_problems:
         prob_name = spec["name"]
@@ -365,6 +391,7 @@ def main():
         for k, (c1, c2, z1, z2) in enumerate(samples):
             res = run_one(spec, c1, c2)
             J = float(res[METRIC]) if res["status"] == "ok" else np.nan
+            # Relative deviation: (J_k - J*_p) / J*_p
             rel = (J - J_star) / J_star if np.isfinite(J) else np.nan
             rel_devs.append(rel)
             detailed_rows.append({
@@ -385,6 +412,8 @@ def main():
                 "J_star": J_star,
                 "rel_dev": rel,
             })
+        # Aggregate the per-sample deviations into the sensitivity score S_p
+        # and a few robust summaries (median, std, max).
         arr = np.array([v for v in rel_devs if np.isfinite(v)])
         S = float(arr.mean()) if arr.size else np.nan
         S_med = float(np.median(arr)) if arr.size else np.nan

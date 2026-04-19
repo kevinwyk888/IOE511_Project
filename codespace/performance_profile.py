@@ -60,6 +60,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_detailed_results(csv_path: Path) -> pd.DataFrame:
+    """Read the detailed sensitivity CSV and coerce numeric columns."""
     df = pd.read_csv(csv_path)
 
     required_columns = {
@@ -85,6 +86,8 @@ def load_detailed_results(csv_path: Path) -> pd.DataFrame:
 
 
 def summarize_parameter_pairs(df: pd.DataFrame) -> pd.DataFrame:
+    """Average f_eval / cpu / iterations across problems for each
+    (method, c1, c2) triple so configurations can be ranked."""
     success = (df["status"] == "ok").astype(float)
     work = df.copy()
     work["success"] = success
@@ -108,6 +111,8 @@ def summarize_parameter_pairs(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def select_top_configs(summary: pd.DataFrame, top_k: int) -> pd.DataFrame:
+    """Keep the best ``top_k`` configurations per method (already sorted by
+    ``summarize_parameter_pairs``) and attach a within-method rank."""
     top_configs = (
         summary.groupby("method", group_keys=False)
         .head(top_k)
@@ -118,22 +123,30 @@ def select_top_configs(summary: pd.DataFrame, top_k: int) -> pd.DataFrame:
 
 
 def config_label(row: pd.Series) -> str:
+    """Short legend label like ``#3  c1=0.05, c2=0.9``."""
     c1 = f"{row['c1_ls']:g}"
     c2 = f"{row['c2_ls']:g}"
     return f"#{int(row['rank_within_method'])}  c1={c1}, c2={c2}"
 
 
 def valid_metric_mask(frame: pd.DataFrame, metric: str) -> pd.Series:
+    """Runs counted as "solved": status == ok and the metric is a finite positive number."""
     values = pd.to_numeric(frame[metric], errors="coerce")
     return (frame["status"] == "ok") & np.isfinite(values) & (values > 0)
 
 
 def build_ratio_table(method_rows: pd.DataFrame, top_configs: pd.DataFrame, metric: str) -> pd.DataFrame:
+    """Build the performance-profile ratio table r_{p,s} = t_{p,s} / min_s t_{p,s}.
+
+    Rows are problems, columns are the top-k configurations, and unsolved
+    runs are assigned ``+inf`` so they never contribute to ``min``.
+    """
     problems = sorted(method_rows["problem"].dropna().unique())
     config_rows = top_configs.sort_values("rank_within_method")
 
     ratio_table = pd.DataFrame(index=problems)
 
+    # Fill the raw metric values into the (problem x configuration) table.
     for _, config in config_rows.iterrows():
         mask = (
             (method_rows["c1_ls"] == config["c1_ls"])
@@ -144,6 +157,7 @@ def build_ratio_table(method_rows: pd.DataFrame, top_configs: pd.DataFrame, metr
         config_runs["metric_value"] = pd.to_numeric(config_runs["metric_value"], errors="coerce")
         config_runs["valid"] = valid_metric_mask(config_runs.rename(columns={"metric_value": metric}), metric)
 
+        # Default to +inf; only overwrite for problems the configuration actually solved.
         values = pd.Series(np.inf, index=problems, dtype=float)
         valid_runs = config_runs[config_runs["valid"]].drop_duplicates(subset=["problem"], keep="first")
         if not valid_runs.empty:
@@ -151,11 +165,13 @@ def build_ratio_table(method_rows: pd.DataFrame, top_configs: pd.DataFrame, metr
 
         ratio_table[config_label(config)] = values
 
+    # Normalize each row by its best configuration to get the ratio r_{p,s}.
     best_by_problem = ratio_table.min(axis=1)
 
     for problem in ratio_table.index:
         best = best_by_problem.loc[problem]
         if not np.isfinite(best):
+            # No configuration solved this problem; every ratio stays +inf.
             ratio_table.loc[problem, :] = np.inf
             continue
         ratio_table.loc[problem, :] = ratio_table.loc[problem, :] / best
@@ -164,6 +180,8 @@ def build_ratio_table(method_rows: pd.DataFrame, top_configs: pd.DataFrame, metr
 
 
 def make_tau_grid(ratio_table: pd.DataFrame, tau_points: int) -> np.ndarray:
+    """Choose a tau grid that spans [1, max finite ratio]; use log spacing when
+    the spread is wide enough to need it."""
     finite_ratios = ratio_table.to_numpy(dtype=float)
     finite_ratios = finite_ratios[np.isfinite(finite_ratios)]
 
@@ -218,6 +236,7 @@ def plot_performance_profile(
     output_path: Path,
     tau_points: int,
 ) -> None:
+    """Draw rho_s(tau) = (1/|P|) * #{p : r_{p,s} <= tau} for every configuration."""
     tau_grid = make_tau_grid(ratio_table, tau_points=tau_points)
     total_problems = len(ratio_table.index)
 
@@ -231,6 +250,7 @@ def plot_performance_profile(
     # when curves overlap. Also give smaller ranks higher zorder explicitly.
     for reverse_idx, column in enumerate(reversed(columns_in_rank_order), start=1):
         ratios = ratio_table[column].to_numpy(dtype=float)
+        # rho_s(tau): fraction of problems this configuration solves within factor tau of the best.
         profile = np.array([(ratios <= tau).sum() / total_problems for tau in tau_grid], dtype=float)
         rank_idx = columns_in_rank_order.index(column) + 1
         line, = ax.plot(
@@ -270,6 +290,7 @@ def plot_performance_profile(
 
 
 def write_summary(top_configs: pd.DataFrame, output_dir: Path) -> Path:
+    """Persist the per-method top-k configuration table alongside the plots."""
     output_path = output_dir / "performance_profile_top10_configs.csv"
     ordered = top_configs.sort_values(["method", "rank_within_method"]).copy()
     ordered.to_csv(output_path, index=False)
@@ -277,6 +298,8 @@ def write_summary(top_configs: pd.DataFrame, output_dir: Path) -> Path:
 
 
 def main() -> None:
+    # Pipeline: load CSV -> rank configurations per method -> for each (method,
+    # metric) pair build the ratio table and save its performance profile plot.
     args = parse_args()
     input_path = args.input.resolve()
     output_dir = args.output_dir.resolve()
