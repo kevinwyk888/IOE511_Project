@@ -8,8 +8,12 @@
   BFGS, BFGSW, DFP, DFPW).
 - `functions.py` — all 12 test problems (Quadratic, Quartic, Rosenbrock,
   Data fitting, Exponential, Genhumps) with function, gradient, and Hessian.
-- `optSolver.py` — main solver entrypoint `optSolver(problem, method, options)`
-  that dispatches to the method-specific routines in `algorithms.py`.
+- `optSolver_Bazinga_Trio.py` — spec-compliant main solver entrypoint
+  `[x, f] = optSolver_Bazinga_Trio(problem, method, options)` that dispatches
+  to the method-specific routines in `algorithms.py`. The module also
+  exports `Solver(...)` returning the richer tuple
+  `(x, f, f_hist, alpha_hist)` used for convergence plots inside the
+  notebooks.
 
 ### 2. `run_summary_table.ipynb`
 Runs the full benchmark of 12 problems × 10 algorithms = 120 runs and
