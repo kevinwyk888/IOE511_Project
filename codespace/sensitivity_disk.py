@@ -1,10 +1,13 @@
 """
-Disk-neighborhood sensitivity analysis for GD with Wolfe line search.
+Disk-neighborhood sensitivity analysis for four Wolfe line-search methods.
 
 Scope (kept deliberately small so it can slot into the poster):
-  * One method: GradientDescentW.
-  * One fixed center (c1*, c2*) = GD's best average parameter pair from
-    the existing aggregate CSV.
+  * Same workflow as the original script.
+  * Four fixed method/center pairs:
+      - GD      : GradientDescentW at (0.099, 0.1)
+      - Newton  : NewtonW          at (0.05, 0.5)
+      - BFGS    : BFGSW            at (0.099, 0.9)
+      - DFP     : DFPW             at (0.001, 0.3)
   * Method 1 normalization (from the notes): log-scale c1, linear c2,
     min-max re-normalized to [0,1]^2.
   * Monte Carlo sampling of N points uniformly inside the disk
@@ -14,11 +17,10 @@ Scope (kept deliberately small so it can slot into the poster):
     where J is f_eval at the given (c1, c2), and J*_p is f_eval at the
     fixed center on problem p (NOT the per-problem best).
 
-Outputs:
-  sensitivity_disk_GD_detailed.csv    one row per (problem, sample)
-  sensitivity_disk_GD_summary.csv     one row per problem
-  sensitivity_disk_GD_scatter.png     visualization of the sampled disk
-  sensitivity_disk_GD_bar.png         per-problem S bar chart
+Outputs per method tag M in {GD, Newton, BFGS, DFP}:
+  sensitivity_disk_M_detailed.csv
+  sensitivity_disk_M_summary.csv
+  sensitivity_disk_M_poster.png
 """
 
 from __future__ import annotations
@@ -30,6 +32,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 HERE = Path(__file__).resolve().parent
@@ -200,7 +204,44 @@ def build_problem_specs(seed=0):
 # ---------------------------------------------------------------------------
 # Fixed experiment settings
 # ---------------------------------------------------------------------------
-METHOD_NAME = "GradientDescentW"
+METHOD_CONFIGS = [
+    {
+        "method_name": "GradientDescentW",
+        "display_name": "GD",
+        "file_tag": "GD",
+        "c1_star": 0.099,
+        "c2_star": 0.1,
+        "c1_text": "0.099",
+        "c2_text": "0.1",
+    },
+    {
+        "method_name": "NewtonW",
+        "display_name": "Newton",
+        "file_tag": "Newton",
+        "c1_star": 0.05,
+        "c2_star": 0.5,
+        "c1_text": "0.05",
+        "c2_text": "0.5",
+    },
+    {
+        "method_name": "BFGSW",
+        "display_name": "BFGS",
+        "file_tag": "BFGS",
+        "c1_star": 0.099,
+        "c2_star": 0.9,
+        "c1_text": "0.099",
+        "c2_text": "0.9",
+    },
+    {
+        "method_name": "DFPW",
+        "display_name": "DFP",
+        "file_tag": "DFP",
+        "c1_star": 0.099,
+        "c2_star": 0.3,
+        "c1_text": "0.099",
+        "c2_text": "0.3",
+    },
+]
 
 # Wolfe-parameter theoretical domain (c1 in (0, 1/2), c2 in (c1, 1)).
 # Using the theoretical range (not the notebook grid) puts the center
@@ -212,11 +253,8 @@ LOG_C1_MIN = math.log10(C1_MIN)
 LOG_C1_MAX = math.log10(C1_MAX)
 
 # Fixed center — GD's best average pair across all 12 problems
-C1_STAR = 0.05
-C2_STAR = 0.20
-
 # Disk radius in normalized [0,1]^2 space and Monte Carlo sample size
-RADIUS = 0.15
+RADIUS = 0.1
 N_SAMPLES = 100
 SEED = 7
 METRIC = "f_eval"
@@ -229,10 +267,8 @@ MAX_ITER = 1000
 GLOBAL_OPTIONS = {
     "term_tol": TERM_TOL,
     "max_iterations": MAX_ITER,
-    "c1_ls": C1_STAR,
-    "c2_ls": C2_STAR,
 }
-METHOD_DEFAULTS = {"alpha0": 1.0, "c1_ls": C1_STAR, "c2_ls": C2_STAR}
+METHOD_DEFAULTS = {"alpha0": 1.0}
 
 
 # Method-1 normalization: log-scale c1, linear c2, both mapped to [0, 1].
@@ -276,8 +312,8 @@ def sample_disk(z1_star, z2_star, radius, n_samples, rng):
     return pts
 
 
-def run_one(problem_spec, c1_ls, c2_ls):
-    """Run GradientDescentW once on ``problem_spec`` with the given Wolfe
+def run_one(problem_spec, method_name, c1_ls, c2_ls):
+    """Run one Wolfe-line-search method on ``problem_spec`` with the given
     parameters and return iteration counts, work, and a convergence flag."""
     method_options = dict(METHOD_DEFAULTS)
     method_options["c1_ls"] = c1_ls
@@ -294,7 +330,7 @@ def run_one(problem_spec, c1_ls, c2_ls):
         grad=problem_spec["grad"],
         hess=problem_spec["hess"],
     )
-    method = Method(METHOD_NAME, **method_options)
+    method = Method(method_name, **method_options)
     options = Options(**merged_global)
 
     t0 = time.perf_counter()
@@ -337,12 +373,22 @@ def run_one(problem_spec, c1_ls, c2_ls):
     }
 
 
-def main():
-    # Stage 1: set up problem set and Monte Carlo samples in normalized space.
-    specs = build_problem_specs(seed=0)
+def run_method(config, specs):
+    method_name = config["method_name"]
+    display_name = config["display_name"]
+    file_tag = config["file_tag"]
+    c1_star = config["c1_star"]
+    c2_star = config["c2_star"]
+    c1_text = config.get("c1_text", str(c1_star))
+    c2_text = config.get("c2_text", str(c2_star))
 
-    z1_star, z2_star = to_z(C1_STAR, C2_STAR)
-    print(f"Center (c1*, c2*) = ({C1_STAR}, {C2_STAR})  "
+    print(f"\n{'=' * 72}")
+    print(f"Running sensitivity analysis for {display_name} ({method_name})")
+    print(f"{'=' * 72}")
+
+    # Stage 1: set up Monte Carlo samples in normalized space.
+    z1_star, z2_star = to_z(c1_star, c2_star)
+    print(f"Center (c1*, c2*) = ({c1_text}, {c2_text})  "
           f"-> (z1*, z2*) = ({z1_star:.3f}, {z2_star:.3f})")
     print(f"Disk radius r = {RADIUS} in normalized [0,1]^2 space, "
           f"N = {N_SAMPLES} Monte Carlo samples")
@@ -358,7 +404,7 @@ def main():
     print("Running center (c1*, c2*) on every problem to get J*_p ...")
     center_info = {}
     for spec in specs:
-        res = run_one(spec, C1_STAR, C2_STAR)
+        res = run_one(spec, method_name, c1_star, c2_star)
         center_info[spec["name"]] = res
         flag = "converged" if res["converged"] else "NOT converged"
         print(f"  {spec['name']:24s}  J*={res[METRIC]:<7}  "
@@ -389,7 +435,7 @@ def main():
         rel_devs = []
         t_start = time.perf_counter()
         for k, (c1, c2, z1, z2) in enumerate(samples):
-            res = run_one(spec, c1, c2)
+            res = run_one(spec, method_name, c1, c2)
             J = float(res[METRIC]) if res["status"] == "ok" else np.nan
             # Relative deviation: (J_k - J*_p) / J*_p
             rel = (J - J_star) / J_star if np.isfinite(J) else np.nan
@@ -423,8 +469,8 @@ def main():
 
         summary_rows.append({
             "problem": prob_name,
-            "c1_star": C1_STAR,
-            "c2_star": C2_STAR,
+            "c1_star": c1_star,
+            "c2_star": c2_star,
             "J_star": J_star,
             "radius": RADIUS,
             "n_valid": int(arr.size),
@@ -438,8 +484,8 @@ def main():
         print(f"  {prob_name:24s}  S_mean={S: .3f}  S_med={S_med: .3f}  "
               f"S_std={S_std: .3f}  n_fail={failed}  ({elapsed:.1f}s)")
 
-    detailed_out = HERE / "sensitivity_disk_GD_detailed.csv"
-    summary_out = HERE / "sensitivity_disk_GD_summary.csv"
+    detailed_out = HERE / f"sensitivity_disk_{file_tag}_detailed.csv"
+    summary_out = HERE / f"sensitivity_disk_{file_tag}_summary.csv"
     pd.DataFrame(detailed_rows).to_csv(detailed_out, index=False)
     summary_df = pd.DataFrame(summary_rows)
     summary_df.to_csv(summary_out, index=False)
@@ -448,7 +494,10 @@ def main():
 
     overall_S = summary_df["S_mean"].mean()
     overall_med = summary_df["S_median"].mean()
-    print(f"\nOverall sensitivity for GD around (c1*={C1_STAR}, c2*={C2_STAR}):")
+    print(
+        f"\nOverall sensitivity for {display_name} around "
+        f"(c1*={c1_text}, c2*={c2_text}):"
+    )
     print(f"  mean of per-problem S_mean   = {overall_S:.3f}")
     print(f"  mean of per-problem S_median = {overall_med:.3f}")
 
@@ -516,8 +565,8 @@ def main():
         fontsize=11, color="#223",
     )
     ax.set_title(
-        "GD Wolfe-parameter local sensitivity  "
-        rf"(center $(c_1^*, c_2^*)=({C1_STAR}, {C2_STAR})$, "
+        f"{display_name} Wolfe-parameter local sensitivity  "
+        rf"(center $(c_1^*, c_2^*)=({c1_text}, {c2_text})$, "
         rf"disk $r={RADIUS}$, $N={N_SAMPLES}$, $J=$ f-evals)",
         fontsize=11.5, color=UMICH_BLUE, pad=10, weight="semibold",
     )
@@ -561,10 +610,16 @@ def main():
         inset.spines[s].set_visible(False)
 
     plt.tight_layout()
-    out_path = HERE / "sensitivity_disk_GD_poster.png"
+    out_path = HERE / f"sensitivity_disk_{file_tag}_poster.png"
     fig.savefig(out_path, dpi=300, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"Saved poster figure to: {out_path}")
+
+
+def main():
+    specs = build_problem_specs(seed=0)
+    for config in METHOD_CONFIGS:
+        run_method(config, specs)
 
 
 if __name__ == "__main__":
