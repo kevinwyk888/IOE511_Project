@@ -33,9 +33,17 @@ def _initial_trust_radius(method, options):
 
 
 def Solver(problem, method, options):
-    """Run one chosen optimization algorithm on one chosen problem."""
+    """Run one chosen optimization algorithm on one chosen problem.
+
+    Returns the full 4-tuple (x, f, f_hist, alpha_hist) used by the
+    in-project benchmarking notebooks. The spec-compliant entrypoint
+    ``optSolver_Bazinga_Trio`` wraps this and returns only (x, f).
+    """
+    # Spec requires both problem.x0 and problem.name.
     if _get_value(problem, "x0", None) is None:
         raise ValueError("problem.x0 is required")
+    if _get_value(problem, "name", None) is None:
+        raise ValueError("problem.name is required")
 
     method_name = _get_value(method, "name", None)
     if method_name is None:
@@ -97,7 +105,7 @@ def Solver(problem, method, options):
                     options,
                     trust_radius,
                 )
-                
+
             # Algorithm 6: TRSR1CG, SR1 quasi-Newton with CG subproblem solver.
             case "TRSR1CG":
                 x_new, f_new, g_new, _, alpha, trust_radius, Bk = algorithms.TRSR1CG(
@@ -110,7 +118,7 @@ def Solver(problem, method, options):
                     options,
                     trust_radius,
                 )
-                
+
             # Algorithm 7: BFGS, BFGS quasi-Newton with backtracking line search.
             case "BFGS" | "BFGS QN backtrack":
                 x_new, f_new, g_new, _, alpha, Hk = algorithms.BFGS(x, f, g, Hk, problem, method, options)
@@ -142,6 +150,18 @@ def Solver(problem, method, options):
     return x, f, f_hist, alpha_hist
 
 
-def optSolver(problem, method, options):
-    """Template-compatible entrypoint that forwards to Solver."""
-    return Solver(problem, method, options)
+def optSolver_Bazinga_Trio(problem, method, options=None):
+    """Spec-compliant entrypoint: ``[x, f] = optSolver_Bazinga_Trio(problem, method, options)``.
+
+    Per the project description, ``options`` may be an empty struct/list;
+    in that case all algorithm options fall back to their defaults.
+    """
+    if options is None or (isinstance(options, (list, tuple)) and len(options) == 0):
+        options = _EmptyOptions()
+    x, f, _, _ = Solver(problem, method, options)
+    return x, f
+
+
+class _EmptyOptions:
+    """Placeholder options container used when the caller passes an empty options struct."""
+    pass

@@ -1,6 +1,6 @@
 """IOE 511/MATH 562, University of Michigan.
 
-Core algorithm implementations used by ``optSolver.py``.
+Core algorithm implementations used by ``optSolver_Bazinga_Trio.py``.
 """
 
 import numpy as np
